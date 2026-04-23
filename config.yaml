@@ -1,0 +1,11 @@
+camera:
+  width: 640
+  height: 480
+  pixel_format: YUV420 # YUV420 | NV12
+  fps: 17
+  hflip: true
+  vflip: true
+
+stream:
+  enabled: true
+  url: "rtsps://vcloud.vcv.vn:20972/livestream/UBTL.24D2AC5_TEST1?secretKey=abcd1234"

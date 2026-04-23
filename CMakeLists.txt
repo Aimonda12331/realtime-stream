@@ -8,9 +8,18 @@ project(bodyCam
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-#Add subdirs (modules) thêm thư mục con
-add_subdirectory(src) #  tạo excutable ở app/
+# Optionally allow overriding install prefix
+if(NOT CMAKE_INSTALL_PREFIX)
+    set(CMAKE_INSTALL_PREFIX /usr CACHE PATH "Install prefix")
+endif()
+
+# Put compiled binaries under build/bin
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+
+# Add source tree
+add_subdirectory(src)
 
 
 

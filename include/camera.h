@@ -18,6 +18,7 @@
 #include <thread>
 #include <chrono>
 #include <atomic>
+#include <string>
 #include <map>
 #include <mutex>
 #include <condition_variable>
@@ -105,6 +106,14 @@ public:
      */
     void release();
 
+    /**
+     * @brief Set RTSP output URL and optionally fps. If set, CameraStreamer will
+     *        attempt to open the internal FFmpegStreamer and publish frames to RTSP.
+     * @param url RTSP/RTSPS URL (empty to disable)
+     * @param fps target frames per second for encoder
+     */
+    void setRtsp(const std::string &url, int fps = 25) { rtsp_url_ = url; out_fps_ = fps; target_fps_ = fps; }
+
 
     // ========================= Query: truy vấn dữ lịu nhó =========================
 
@@ -119,7 +128,10 @@ public:
      * @return Số frame (relaxed ordering, dùng cho monitoring).
      */    
     uint64_t frameCount() const { return frameCount_.load(std::memory_order_relaxed); }
-  
+
+    void setFlip(bool hflip, bool vflip) { hflip_ = hflip; vflip_ = vflip; }
+
+    void setTargetFps(int fps) { target_fps_ = fps; }  // ✅ setter
 private:
     // ========================= Du lieu noi bo =========================
 
@@ -190,12 +202,36 @@ private:
     //pre-mmap table
     std::map<int, MmapEntry> mmaps_;              ///< Bảng pre-mmap: fd → {base, size}.
 
+    // configured format/size (set in configure()) so we can open FFmpegStreamer
+    libcamera::PixelFormat configured_pixfmt_{};
+    libcamera::Size        configured_size_{};
+
+    // FFmpeg RTSP output (optional)
+    std::unique_ptr<class FFmpegStreamer> ff_ = nullptr;
+    std::string rtsp_url_;
+    int out_fps_ = 25;
+
     // Frame queue (dùng trong streaming)
+    size_t max_job_queue_size_{4};
     std::queue<FrameJob>    jobQueue_;            ///< Hàng đợi frame cho worker thread.
     std::mutex              queueMutex_;          ///< Mutex bảo vệ jobQueue_.
     std::condition_variable queueCv_;             ///< CV thông báo job mới.
     std::atomic<bool>       workerAlive_{false};  ///< Cờ worker thread còn hoạt động.
     std::atomic<uint64_t>   frameCount_{0};       ///< Bộ đếm frame (atomic, relaxed).
+    std::atomic<uint64_t> dropped_jobs_{0};
+
+    bool hflip_ = false;
+    bool vflip_ = false;
+
+    int target_fps_ = 25;  // thêm này để khóa fps
+
+    // Buffer pool để tái sử dụng
+    std::queue<std::vector<uint8_t>> buffer_pool_;
+    std::mutex pool_mutex_;
+    static const size_t POOL_SIZE = 4;  // pre-allocate 4 buffers
+
+    std::vector<uint8_t> acquireBuffer(size_t size);
+    void releaseBuffer(std::vector<uint8_t> &&buf);
 };
 
 #endif //CAMERA_H_
