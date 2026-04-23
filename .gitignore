@@ -1,9 +1,0 @@
-# Ignore everything
-*
-
-# But keep these files/folders
-!CMakeLists.txt
-!config.yaml
-!setup.sh
-!include/
-!src/
