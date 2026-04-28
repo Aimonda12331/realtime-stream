@@ -238,9 +238,12 @@ int CameraStreamer::startStreaming() {
                 jobQueue_.pop();
             }
             if (ff_) {
-                // Move frame ownership into FFmpeg queue to avoid one extra copy.
-                // Do NOT release buffer here because ownership transferred to ff_.
-                ff_->pushFrame(std::move(job.data));
+                // Giữ một bản copy để trả về pool sau khi push cho FFmpeg.
+                // FFmpegStreamer tự copy vào AVFrame buffer của nó trong encodingThread,
+                // nên job.data (original) có thể được giải phóng về pool ngay.
+                auto pool_buf = std::move(job.data);       // lấy ownership
+                ff_->pushFrame(std::vector<uint8_t>(pool_buf)); // copy cho FFmpeg
+                releaseBuffer(std::move(pool_buf));        // trả original về pool
             } else {
                 if(!writeAll(STDOUT_FILENO, job.data.data(), job.data.size())) {
                     std::cerr << "write stdout that bai, dung stream\n";

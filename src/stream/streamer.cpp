@@ -57,7 +57,6 @@ bool FFmpegStreamer::open(const std::string &url, int width, int height, AVPixel
     height_ = height;
     fps_ = fps;
     in_pix_fmt_ = in_pixfmt;
-    pts_counter_ = 0;
 
     // allocate output context
     avformat_alloc_output_context2(&ofmt_ctx_, nullptr, "rtsp", url.c_str());
@@ -97,10 +96,10 @@ bool FFmpegStreamer::open(const std::string &url, int width, int height, AVPixel
     enc_ctx_->height = height_;
     enc_ctx_->time_base = AVRational{1, fps_};
     enc_ctx_->framerate = AVRational{fps_, 1};
-    enc_ctx_->gop_size = fps_; // 1 second gop
+    enc_ctx_->gop_size = std::max(1, fps_ / 2); // keyframe mỗi 0.5 giây
     enc_ctx_->max_b_frames = 0;
     enc_ctx_->pix_fmt = enc_pix_fmt_;
-    enc_ctx_->bit_rate = 400000; // adjust
+    enc_ctx_->bit_rate = 1200000; // adjust
 
     // set encoder options: preset & tune for low-latency
     AVDictionary *codec_opts = nullptr;
@@ -145,6 +144,8 @@ bool FFmpegStreamer::open(const std::string &url, int width, int height, AVPixel
     // set format-level options (e.g., rtsp_transport)
     AVDictionary *fmt_opts = nullptr;
     av_dict_set(&fmt_opts, "rtsp_transport", "tcp", 0); // use TCP for RTSP by default
+	av_dict_set(&fmt_opts, "fflags", "nobuffer", 0); // disable additional buffering if supported
+
     // write header
     int hdr_ret = avformat_write_header(ofmt_ctx_, &fmt_opts);
     if (hdr_ret < 0) {
@@ -153,6 +154,10 @@ bool FFmpegStreamer::open(const std::string &url, int width, int height, AVPixel
         return false;
     }
     av_dict_free(&fmt_opts);
+
+    // Flush mỗi packet ngay, không buffer thêm
+    if (ofmt_ctx_->pb) ofmt_ctx_->pb->direct = 1;
+    ofmt_ctx_->flags |= AVFMT_FLAG_FLUSH_PACKETS;
 
     // prepare sws if input pixfmt != encoder pixfmt
     if (in_pix_fmt_ != enc_pix_fmt_) {
@@ -204,6 +209,10 @@ void FFmpegStreamer::encodingThreadFunc() {
     }
 
     AVPacket *pkt = av_packet_alloc();
+
+    // Wall-clock base để tính PTS chính xác, tránh drift khi drop frame
+    auto stream_start = std::chrono::steady_clock::now();
+    int64_t last_pts = -1; // đảm bảo PTS luôn tăng dần, tránh lỗi DTS muxer
 
     while (running_) {
         std::vector<uint8_t> cur;
@@ -263,8 +272,20 @@ void FFmpegStreamer::encodingThreadFunc() {
             sws_scale(sws_ctx_, src_data, src_linesize, 0, height_, frame->data, frame->linesize);
         }
 
-        // set pts
-        frame->pts = pts_counter_++;
+        // set pts theo wall clock thực tế — tránh drift khi frame bị drop
+        // Đảm bảo strictly monotonically increasing để tránh lỗi DTS muxer
+        {
+            auto now_tp = std::chrono::steady_clock::now();
+            int64_t elapsed_us = std::chrono::duration_cast<std::chrono::microseconds>(
+                now_tp - stream_start).count();
+            int64_t pts = av_rescale_q(elapsed_us,
+                                       AVRational{1, 1000000},
+                                       enc_ctx_->time_base);
+            // Nếu do jitter 2 frame cùng tick → tăng thêm 1 để monotonic
+            if (pts <= last_pts) pts = last_pts + 1;
+            last_pts = pts;
+            frame->pts = pts;
+        }
 
         // send to encoder
         ret = avcodec_send_frame(enc_ctx_, frame);
@@ -285,7 +306,8 @@ void FFmpegStreamer::encodingThreadFunc() {
             // Rescale packet pts/dts
             av_packet_rescale_ts(pkt, enc_ctx_->time_base, out_stream_->time_base);
             pkt->stream_index = out_stream_->index;
-            // write packet
+            // write packet — interleaved để muxer xử lý thứ tự DTS đúng,
+            // AVFMT_FLAG_FLUSH_PACKETS đảm bảo gửi ngay không buffer
             ret = av_interleaved_write_frame(ofmt_ctx_, pkt);
             if (ret < 0) {
                 std::cerr << "Error writing packet: " << ret << "\n";
@@ -301,7 +323,7 @@ void FFmpegStreamer::encodingThreadFunc() {
     while (avcodec_receive_packet(enc_ctx_, pkt) == 0) {
         av_packet_rescale_ts(pkt, enc_ctx_->time_base, out_stream_->time_base);
         pkt->stream_index = out_stream_->index;
-        av_interleaved_write_frame(ofmt_ctx_, pkt);
+        av_write_frame(ofmt_ctx_, pkt);
         av_packet_unref(pkt);
     }
 

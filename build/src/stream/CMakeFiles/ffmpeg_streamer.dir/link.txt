@@ -1,0 +1,2 @@
+/usr/bin/ar qc libffmpeg_streamer.a CMakeFiles/ffmpeg_streamer.dir/streamer.cpp.o
+/usr/bin/ranlib libffmpeg_streamer.a

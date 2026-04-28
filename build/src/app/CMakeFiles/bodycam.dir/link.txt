@@ -1,0 +1,1 @@
+/usr/bin/c++ -Wl,--dependency-file=CMakeFiles/bodycam.dir/link.d CMakeFiles/bodycam.dir/main.cpp.o CMakeFiles/bodycam.dir/app_config.cpp.o -o ../../bin/bodycam  ../camera/libcamcore.a ../stream/libffmpeg_streamer.a -latomic /usr/lib/arm-linux-gnueabihf/libyaml-cpp.so.0.8.0 -lcamera -lcamera-base -lavformat -lavcodec -lavutil -lswscale

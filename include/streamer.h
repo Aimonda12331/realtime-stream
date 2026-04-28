@@ -16,6 +16,7 @@ extern "C" {
 #include <vector>
 #include <string>
 #include <atomic>
+#include <chrono>
 
 class FFmpegStreamer {
 public:
@@ -39,7 +40,7 @@ private:
     AVCodecContext *enc_ctx_{nullptr};
     AVStream *out_stream_{nullptr};
     SwsContext *sws_ctx_{nullptr};
-    size_t max_queue_size_{4};
+    size_t max_queue_size_{2};
 
     // input params
     int width_{0}, height_{0}, fps_{0};
@@ -54,7 +55,7 @@ private:
     std::atomic<uint64_t> encoded_frames_{0};
     std::atomic<uint64_t> sent_packets_{0};
     std::atomic<bool> running_{false};
-    uint64_t pts_counter_{0};
+    // pts_counter_ đã bị thay thế bởi wall-clock PTS trong encodingThreadFunc
 
     // options
     std::string url_;

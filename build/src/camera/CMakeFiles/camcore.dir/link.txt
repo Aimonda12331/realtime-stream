@@ -1,0 +1,2 @@
+/usr/bin/ar qc libcamcore.a CMakeFiles/camcore.dir/camera.cpp.o
+/usr/bin/ranlib libcamcore.a

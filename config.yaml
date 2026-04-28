@@ -2,7 +2,7 @@ camera:
   width: 640
   height: 480
   pixel_format: YUV420 # YUV420 | NV12
-  fps: 17
+  fps: 15
   hflip: true
   vflip: true
 

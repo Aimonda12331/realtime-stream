@@ -212,7 +212,7 @@ private:
     int out_fps_ = 25;
 
     // Frame queue (dùng trong streaming)
-    size_t max_job_queue_size_{4};
+    size_t max_job_queue_size_{2};
     std::queue<FrameJob>    jobQueue_;            ///< Hàng đợi frame cho worker thread.
     std::mutex              queueMutex_;          ///< Mutex bảo vệ jobQueue_.
     std::condition_variable queueCv_;             ///< CV thông báo job mới.
@@ -228,7 +228,7 @@ private:
     // Buffer pool để tái sử dụng
     std::queue<std::vector<uint8_t>> buffer_pool_;
     std::mutex pool_mutex_;
-    static const size_t POOL_SIZE = 4;  // pre-allocate 4 buffers
+    static const size_t POOL_SIZE = 2;  // đồng bộ với max_job_queue_size_
 
     std::vector<uint8_t> acquireBuffer(size_t size);
     void releaseBuffer(std::vector<uint8_t> &&buf);
