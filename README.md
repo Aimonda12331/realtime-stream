@@ -1,100 +1,127 @@
-# ff-libva-libcamera_0
+# realtime-stream
 
-Tệp README ngắn (Tiếng Việt) mô tả chính xác chương trình hiện tại — những gì nó làm và những gì chưa có.
+Checklist — README này bao gồm:
+- Tổng quan dự án và kiến trúc
+- Hướng dẫn build và chạy (các lệnh copy được)
+- Cấu hình (`config.yaml`) và ví dụ
+- Chức năng hiện tại và các sửa lỗi gần đây cho realtime
+- Các bước tinh chỉnh thực tế để cải thiện realtime và giảm CPU
+- Khắc phục sự cố và cách đọc log
 
-Mô tả chung
-------------
-Đây là một ứng dụng C++ dùng `libcamera` để lấy khung hình từ camera (Raspberry Pi / V4L2-compatible) và dùng FFmpeg (libav*) để mã hóa và phát trực tiếp (stream) video qua RTSP. Ứng dụng nhẹ, hướng tới môi trường nhúng và đã được tổ chức thành các module: camera, streamer (FFmpegStreamer) và app.
+## Tổng quan dự án
 
-Tính năng hiện có
------------------
-- Khởi tạo camera bằng `libcamera` và cấu hình độ phân giải, fps, pixel format (YUV420 hoặc NV12).
-- Mã hóa video sang H.264 (sử dụng phần cứng nếu có: `h264_v4l2m2m`, hoặc phần mềm fallback) và xuất tới một RTSP server bằng `AVFormatContext`.
-- Tự động chọn pixel format encoder phù hợp và thực hiện chuyển đổi màu (sws_scale) khi cần.
-- Hỗ trợ override file cấu hình YAML (`config.yaml`) và override URL RTSP từ dòng lệnh.
-- Xếp hàng (queue) các khung ảnh đầu vào, xử lý đa luồng để mã hóa (encoder thread) và drop frame nếu queue đầy.
-- Xử lý SIGINT (Ctrl+C) để gọi `stop()`/`close()` dọn dẹp an toàn.
+`realtime-stream` thu nhận khung hình thô từ camera Raspberry Pi bằng libcamera, tùy chọn mã hóa bằng FFmpeg (H.264) và phát RTSP stream. Code tập trung vào độ trễ thấp bằng cách dùng dmabuf pre-mapped, hàng đợi nhỏ, và encoder FFmpeg được tinh chỉnh cho low latency.
 
-Những gì chương trình **không** làm (hiện tại)
-------------------------------------------------
-- Chưa có tích hợp âm thanh (micro INMP441 / I2S / ALSA). Audio chưa được multiplex vào RTSP stream.
-- Không có giao diện web hay server RTSP nội bộ; chương trình đóng vai trò client/producer, gửi dữ liệu tới RTSP server được chỉ định qua URL.
+Các file nguồn chính:
+- `src/app/main.cpp` — điểm vào chương trình, load `config.yaml`, khởi động `CameraStreamer`.
+- `include/camera.h`, `src/camera/camera.cpp` — capture libcamera, pre-mmap, xử lý request và job queue.
+- `include/streamer.h`, `src/stream/streamer.cpp` — wrapper FFmpeg (`FFmpegStreamer`) để encode và xuất RTSP.
+- `src/app/app_config.cpp` — parse YAML config.
+- `config.yaml` — ví dụ config mặc định.
 
-Vị trí mã nguồn chính
-----------------------
-- `src/app/main.cpp` : điểm vào chương trình, đọc cấu hình, khởi tạo `CameraStreamer`.
-- `src/camera/` : mã liên quan tới libcamera và lấy khung hình.
-- `src/stream/streamer.cpp`, `include/streamer.h` : lớp `FFmpegStreamer` chịu trách nhiệm mã hóa và gửi RTSP.
-- `include/app_config.h` : mô tả cấu trúc cấu hình YAML (AppConfig).
+## Chức năng hiện tại
+- Phát hiện và lấy camera libcamera đầu tiên.
+- Tạo cấu hình `VideoRecording` và áp dụng pixel format + size (fallback sang NV12 nếu cần).
+- Pre-allocate và pre-mmap dmabuf để tránh overhead mmap mỗi frame.
+- Sao chép plane frame vào pool buffer CPU tái sử dụng để tránh cấp phát liên tục.
+- Chạy worker thread đẩy frame vào `FFmpegStreamer` khi RTSP bật, hoặc ghi raw ra stdout nếu không.
+- `FFmpegStreamer` encode frame trong thread riêng và publish RTSP qua libav*.
 
-Phụ thuộc (cần có trên hệ để build)
------------------------------------
-- cmake, g++/clang, build-essential
-- libcamera (dev headers), FFmpeg dev libs: libavformat, libavcodec, libavutil, libswscale
-- (Nếu muốn thêm audio sau này) libswresample, libasound (ALSA)
+### Các sửa lỗi quan trọng gần đây
+- Giảm kích thước queue nội bộ (camera job queue và encoder queue = 2) để hạn chế buffering và giảm latency.
+- Sửa PTS: frame dùng wall-clock PTS và đảm bảo tăng đơn điệu để tránh lỗi muxer.
+- Set `AVFMT_FLAG_FLUSH_PACKETS` và `pb->direct = 1` để giảm buffering nội bộ FFmpeg.
+- Dùng `av_interleaved_write_frame` để flush ngay.
+- Ưu tiên encoder phần cứng Pi `h264_v4l2m2m`, fallback sang phần mềm nếu không có.
+- Tái sử dụng buffer pool để tránh churn heap.
+- Giảm GOP xuống ~0.5s và tắt B-frame để giảm biến thiên latency.
 
-Script cài đặt tự động
-----------------------
-Project có kèm một script cài đặt tự động `setup.sh` để cài các package và build project (hỗ trợ Raspberry Pi OS / Debian / Ubuntu). Thay vì cài tay từng package, bạn có thể chạy script này.
+## Build
 
-Chạy script (không dùng root):
+Yêu cầu:
+- Toolchain C++17, CMake, libcamera dev, thư viện FFmpeg (libavcodec, libavformat, libswscale, libavutil), yaml-cpp.
 
+Build điển hình:
 ```bash
-chmod +x setup.sh
-./setup.sh
+mkdir -p build
+cd build
+cmake .. -DCMAKE_BUILD_TYPE=Release
+make -j4
 ```
 
-Một vài lưu ý:
-- Script sẽ kiểm tra môi trường và sẽ không chạy nếu bạn đang là root.
-- Script sử dụng `apt` để cài gói; chỉ chạy trên hệ Debian-based.
-- Script có các bước tương tác (ví dụ hỏi có muốn `full-upgrade` hay xóa thư mục `build` nếu tồn tại).
-- Nếu bạn muốn chỉ cài dependencies thủ công, vẫn có thể dùng các lệnh apt trong script (mở file `setup.sh` để xem danh sách gói).
+Binary sau build: `build/bin/bodycam`.
 
-Build
------
-Từ gốc project:
+## Run
+
+Chạy với `config.yaml` mặc định:
 ```bash
-mkdir -p build && cd build
-cmake ..
-make -j$(nproc)
-# binary thường nằm trong build/src/app/
+./build/bin/bodycam config.yaml
 ```
 
-Cấu hình và cách chạy
----------------------
-- File cấu hình mặc định: `config.yaml` (nằm ở thư mục project hoặc parent). Chương trình sẽ thử `config.yaml`, `../config.yaml`, `../../config.yaml` theo thứ tự.
-- Ví dụ cấu hình tối thiểu (YAML):
+Override RTSP URL:
+```bash
+./build/bin/bodycam rtsps://your-server/stream
+```
+
+Nếu `stream.enabled` = false, chương trình ghi raw ra stdout. Ví dụ xem bằng ffplay:
+```bash
+./build/bin/bodycam > /tmp/out.yuv &
+ffplay -f rawvideo -pixel_format yuv420p -video_size 640x480 -framerate 15 /tmp/out.yuv
+```
+
+Xem RTSP output:
+```bash
+ffplay -rtsp_transport tcp -i "rtsps://server/stream?secretKey=..."
+```
+
+## Cấu hình (`config.yaml`)
+
+Ví dụ:
 ```yaml
 camera:
   width: 640
   height: 480
-  fps: 30
-  pixel_format: "YUV420"
-  hflip: false
-  vflip: false
+  pixel_format: YUV420
+  fps: 15
+  hflip: true
+  vflip: true
 
 stream:
   enabled: true
-  url: "rtsp://192.168.1.100:8554/live/stream"
+  url: "rtsps://vcloud.vcv.vn:20972/livestream/UBTL.24D2AC5_TEST1?secretKey=abcd1234"
 ```
 
-Chạy:
-```bash
-./app [config.yaml] [rtsp_override]
-```
-- Nếu `argv[1]` bắt đầu bằng `rtsp://` hoặc `rtsps://` thì nó sẽ được hiểu là URL RTSP override.
-- Nếu `argv[1]` không phải URL thì coi là đường dẫn tới file cấu hình.
-- `argv[2]` (nếu có) luôn ghi đè URL RTSP.
+Ý nghĩa:
+- `camera.width/height` — độ phân giải capture.
+- `camera.pixel_format` — định dạng pixel (YUV420 hoặc NV12).
+- `camera.fps` — FPS cảm biến.
+- `hflip/vflip` — lật hình.
+- `stream.enabled/url` — thiết lập RTSP.
 
-Debug / Kiểm tra nhanh
----------------------
-- Kiểm tra camera libcamera: `libcamera-hello` hoặc `libcamera-vid`.
-- Nếu không stream được, kiểm tra URL RTSP server, firewall, và log stderr của chương trình.
+## Cách cải thiện realtime và giảm CPU
 
-Muốn mở rộng (gợi ý)
----------------------
-- Thêm audio: cần bật I2S/ASoC trên Pi, kiểm tra `arecord -l`, sau đó thêm AVStream audio và thread thu ALSA/encode AAC trong `FFmpegStreamer`.
-- Thêm cấu hình audio vào `config.yaml` (device, enabled, sample_rate, bitrate) và chuyển các tham số đó vào streamer.
+1. Ưu tiên encoder phần cứng (`h264_v4l2m2m`).
+2. Nếu dùng phần mềm:
+    - Giảm bitrate (ví dụ 800k).
+    - Dùng preset `ultrafast`.
+    - Giảm độ phân giải hoặc fps.
+3. Tránh chuyển đổi màu: chọn pixel format phù hợp.
+4. Giữ queue nhỏ (1–2).
+5. Tinh chỉnh OS:
+    - Set CPU governor = performance.
+    - Chạy với realtime scheduling (`chrt`).
+6. Giảm logging.
+7. Zero-copy nâng cao: dùng dmabuf trực tiếp cho encoder.
 
+## Khắc phục sự cố
 
+- `enc_fps << capture_fps` — encoder không theo kịp.
+- `non monotonically increasing dts` — lỗi PTS.
+- `Frame size too small` — mismatch format/size.
+- Vấn đề RTSP với `rtsps://` — nên dùng TCP.
 
+## Log cần chú ý
+- `[config]` — cấu hình camera/stream.
+- `[FPS]` — FPS cảm biến.
+- `[Streaming]` — capture vs encode vs send.
+- `[RTSP] Encoder selected:` — encoder phần cứng hay phần mềm.
